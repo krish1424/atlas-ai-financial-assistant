@@ -4,9 +4,13 @@ from google import genai
 from google.genai import types
 
 from app.ai.memory import ConversationMessage, MemoryManager
-from app.ai.planner import Plan, create_plan
+from app.ai.planner import Plan, Intent, create_plan
 from app.ai.prompts import ATLAS_SYSTEM_PROMPT
 from app.config.settings import get_settings
+from app.tools.financial.company_data import (
+    CompanyDataError,
+    get_company_overview,
+)
 from app.tools.financial.market_data import (
     MarketDataError,
     get_stock_quote,
@@ -49,9 +53,7 @@ class AtlasAgent:
         self.model = self.settings.gemini_model
 
     def create_plan(self, message: str) -> Plan:
-        """
-        Create an execution plan for the user's request.
-        """
+        """Create an execution plan."""
 
         return create_plan(message)
 
@@ -60,9 +62,7 @@ class AtlasAgent:
         user_message: str,
         conversation_history: list[ConversationMessage] | None = None,
     ) -> list[types.Content]:
-        """
-        Convert conversation history into Gemini-compatible messages.
-        """
+        """Convert conversation history into Gemini messages."""
 
         history = conversation_history or []
 
@@ -73,11 +73,9 @@ class AtlasAgent:
         for message in context:
             role = message["role"]
 
-            # Gemini uses "model" instead of "assistant".
             if role == "assistant":
                 role = "model"
 
-            # System messages are handled separately.
             if role == "system":
                 continue
 
@@ -109,18 +107,15 @@ class AtlasAgent:
         self,
         plan: Plan,
     ) -> str:
-        """
-        Retrieve verified market data when the plan
-        requires live market information.
-        """
+        """Retrieve verified stock-market data."""
 
-        if plan.intent.value != "market_data":
+        if plan.intent != Intent.MARKET_DATA:
             return ""
 
         if not plan.symbol:
             return (
-                "No stock symbol could be identified from the user's "
-                "request. Do not guess a symbol. Ask the user to provide "
+                "No stock symbol could be identified. "
+                "Do not guess a symbol. Ask the user for "
                 "a company name or stock ticker."
             )
 
@@ -129,11 +124,10 @@ class AtlasAgent:
 
         except MarketDataError as exc:
             return (
-                "The market data tool failed to retrieve verified data "
-                f"for {plan.symbol}.\n\n"
+                f"Market data could not be retrieved for "
+                f"{plan.symbol}.\n\n"
                 f"Tool error: {exc}\n\n"
-                "Do not invent or estimate a stock price. Explain that "
-                "current market data could not be retrieved."
+                "Do not invent or estimate a stock price."
             )
 
         return (
@@ -145,22 +139,85 @@ class AtlasAgent:
             f"Volume: {quote.volume}\n"
             f"Latest trading day: {quote.latest_trading_day}\n\n"
             "IMPORTANT:\n"
-            "- This data comes from the configured market-data provider.\n"
-            "- Use these values instead of relying on your internal knowledge.\n"
+            "- Use these values instead of internal knowledge.\n"
             "- Do not invent additional market figures.\n"
-            "- Clearly indicate that this is the latest available provider "
-            "data and may not be real-time."
+            "- Clearly state that this is the latest available "
+            "provider data and may not be real-time."
         )
+
+    async def get_company_data_context(
+        self,
+        plan: Plan,
+    ) -> str:
+        """Retrieve verified company fundamentals."""
+
+        if plan.intent != Intent.COMPANY_RESEARCH:
+            return ""
+
+        if not plan.symbol:
+            return (
+                "No company symbol could be identified from the "
+                "user's request. Do not guess a company. Ask the "
+                "user which company they mean."
+            )
+
+        try:
+            company = await get_company_overview(
+                plan.symbol
+            )
+
+        except CompanyDataError as exc:
+            return (
+                f"Company information could not be retrieved "
+                f"for {plan.symbol}.\n\n"
+                f"Tool error: {exc}\n\n"
+                "Do not invent company financial information."
+            )
+
+        return (
+            "VERIFIED COMPANY DATA FROM ALPHA VANTAGE\n"
+            f"Symbol: {company.symbol}\n"
+            f"Company: {company.name}\n"
+            f"Exchange: {company.exchange}\n"
+            f"Country: {company.country}\n"
+            f"Sector: {company.sector}\n"
+            f"Industry: {company.industry}\n"
+            f"Market capitalization: {company.market_cap}\n"
+            f"Revenue TTM: {company.revenue_ttm}\n"
+            f"Profit margin: {company.profit_margin}\n"
+            f"P/E ratio: {company.pe_ratio}\n"
+            f"Dividend yield: {company.dividend_yield}\n\n"
+            "IMPORTANT:\n"
+            "- Use these values instead of internal knowledge.\n"
+            "- Do not invent additional financial figures.\n"
+            "- Explain figures clearly when presenting them."
+        )
+
+    async def get_tool_context(
+        self,
+        plan: Plan,
+    ) -> str:
+        """
+        Execute the appropriate tool based on the plan.
+        """
+
+        if not plan.requires_tool:
+            return ""
+
+        if plan.intent == Intent.MARKET_DATA:
+            return await self.get_market_data_context(plan)
+
+        if plan.intent == Intent.COMPANY_RESEARCH:
+            return await self.get_company_data_context(plan)
+
+        return ""
 
     async def generate_response(
         self,
         messages: list[types.Content],
         tool_context: str = "",
     ) -> str:
-        """
-        Send the conversation and verified tool information
-        to Gemini and return the generated response.
-        """
+        """Generate the final Gemini response."""
 
         system_instruction = ATLAS_SYSTEM_PROMPT
 
@@ -168,8 +225,9 @@ class AtlasAgent:
             system_instruction += (
                 "\n\n"
                 "TOOL EXECUTION CONTEXT\n"
-                "The following information was retrieved by Atlas tools. "
-                "Treat it as verified external data for this response.\n\n"
+                "The following information was retrieved by "
+                "Atlas tools. Treat it as verified external "
+                "data for this response.\n\n"
                 f"{tool_context}"
             )
 
@@ -194,9 +252,7 @@ class AtlasAgent:
         user_message: str,
         conversation_history: list[ConversationMessage] | None = None,
     ) -> AgentResponse:
-        """
-        Process a user request through the Atlas AI pipeline.
-        """
+        """Process a user request through Atlas."""
 
         if not user_message or not user_message.strip():
             raise ValueError(
@@ -205,34 +261,19 @@ class AtlasAgent:
 
         user_message = user_message.strip()
 
-        # ---------------------------------------------------------
-        # Step 1: Understand the request.
-        # ---------------------------------------------------------
-
+        # 1. Create execution plan.
         plan = self.create_plan(user_message)
 
-        # ---------------------------------------------------------
-        # Step 2: Prepare conversation context.
-        # ---------------------------------------------------------
-
+        # 2. Prepare conversation context.
         messages = self.build_messages(
             user_message=user_message,
             conversation_history=conversation_history,
         )
 
-        # ---------------------------------------------------------
-        # Step 3: Execute required tools.
-        # ---------------------------------------------------------
+        # 3. Execute required tools.
+        tool_context = await self.get_tool_context(plan)
 
-        tool_context = ""
-
-        if plan.requires_tool and plan.intent.value == "market_data":
-            tool_context = await self.get_market_data_context(plan)
-
-        # ---------------------------------------------------------
-        # Step 4: Generate the final response.
-        # ---------------------------------------------------------
-
+        # 4. Generate final response.
         response = await self.generate_response(
             messages=messages,
             tool_context=tool_context,
