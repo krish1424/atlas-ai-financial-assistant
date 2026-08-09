@@ -1,23 +1,60 @@
 from fastapi import FastAPI
+from sqlalchemy import text
+
+from app.config.settings import get_settings
+from app.database.database import engine
+
+
+settings = get_settings()
+
 
 app = FastAPI(
-    title="Atlas AI Financial Assistant",
+    title=settings.app_name,
     description="Conversational AI financial assistant",
-    version="0.1.0",
+    version=settings.app_version,
 )
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, str]:
+    """Basic service information."""
+
     return {
         "status": "online",
-        "service": "Atlas AI Financial Assistant",
-        "version": "0.1.0",
+        "service": settings.app_name,
+        "version": settings.app_version,
     }
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict[str, str]:
+    """Basic application health check."""
+
     return {
-        "status": "healthy"
+        "status": "healthy",
     }
+
+
+@app.get("/ready")
+async def readiness_check() -> dict[str, str]:
+    """
+    Check whether Atlas is ready to accept requests.
+
+    The readiness check verifies that the application
+    can communicate with the configured database.
+    """
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+
+        return {
+            "status": "ready",
+            "database": "connected",
+        }
+
+    except Exception:
+        return {
+            "status": "not_ready",
+            "database": "unavailable",
+        }
