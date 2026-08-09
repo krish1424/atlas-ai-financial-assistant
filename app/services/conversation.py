@@ -57,3 +57,23 @@ class ConversationService:
             db=db,
             conversation_id=conversation_id,
         )
+
+    @staticmethod
+    def get_or_create_conversation(
+        db: Session,
+        user_id: int,
+    ) -> Conversation:
+
+        conversation = ConversationRepository.get_latest_for_user(
+            db=db,
+            user_id=user_id,
+        )
+
+        if conversation:
+            return conversation
+
+        return ConversationRepository.create(
+            db=db,
+            user_id=user_id,
+            title="Atlas Conversation",
+        )

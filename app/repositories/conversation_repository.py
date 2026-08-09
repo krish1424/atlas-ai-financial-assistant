@@ -48,3 +48,18 @@ class ConversationRepository:
         )
 
         return list(db.scalars(statement).all())
+
+    @staticmethod
+    def get_latest_for_user(
+        db: Session,
+        user_id: int,
+    ) -> Conversation | None:
+
+        statement = (
+            select(Conversation)
+            .where(Conversation.user_id == user_id)
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
+
+        return db.scalar(statement)

@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
 
     # AI
-    openai_api_key: str = ""
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash-lite"
 
     # Financial data providers
     finnhub_api_key: str = ""
