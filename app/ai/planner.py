@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+import re
 
 
 class Intent(str, Enum):
@@ -18,13 +19,62 @@ class Plan:
     requires_live_data: bool = False
     requires_document: bool = False
     requires_tool: bool = False
+    symbol: str | None = None
+
+
+def extract_symbol(message: str) -> str | None:
+    """
+    Try to extract a stock ticker from a user message.
+
+    This is intentionally conservative. We first support
+    explicit ticker formats such as $AAPL or common
+    company/ticker references.
+    """
+
+    # Match $AAPL, $MSFT, $IBM, etc.
+    ticker_match = re.search(
+        r"\$([A-Za-z]{1,5})\b",
+        message,
+    )
+
+    if ticker_match:
+        return ticker_match.group(1).upper()
+
+    # Common company → ticker mappings for the first MVP.
+    company_symbols = {
+        "apple": "AAPL",
+        "microsoft": "MSFT",
+        "google": "GOOGL",
+        "alphabet": "GOOGL",
+        "amazon": "AMZN",
+        "nvidia": "NVDA",
+        "tesla": "TSLA",
+        "meta": "META",
+        "facebook": "META",
+        "ibm": "IBM",
+        "netflix": "NFLX",
+        "intel": "INTC",
+        "amd": "AMD",
+        "oracle": "ORCL",
+        "adobe": "ADBE",
+        "salesforce": "CRM",
+    }
+
+    text = message.lower()
+
+    for company, symbol in company_symbols.items():
+        if company in text:
+            return symbol
+
+    return None
 
 
 def create_plan(message: str) -> Plan:
     """
-    Basic deterministic planner.
+    Create a deterministic execution plan.
 
-    We will later replace/extend this with LLM-based intent detection.
+    The planner determines the user's intent and identifies
+    whether a live financial tool is required.
     """
 
     text = message.lower()
@@ -44,9 +94,13 @@ def create_plan(message: str) -> Plan:
         "share price",
         "market price",
         "price of",
+        "stock",
+        "shares",
         "market cap",
         "pe ratio",
         "p/e",
+        "trading at",
+        "quote",
     ]
 
     news_keywords = [
@@ -61,13 +115,15 @@ def create_plan(message: str) -> Plan:
     company_keywords = [
         "company",
         "business",
-        "revenue",
-        "profit",
         "competitor",
         "ceo",
         "funding",
         "acquisition",
         "merger",
+        "earnings",
+        "financial performance",
+        "how is",
+        "performance of",
     ]
 
     if any(keyword in text for keyword in document_keywords):
@@ -82,6 +138,7 @@ def create_plan(message: str) -> Plan:
             intent=Intent.MARKET_DATA,
             requires_live_data=True,
             requires_tool=True,
+            symbol=extract_symbol(message),
         )
 
     if any(keyword in text for keyword in news_keywords):
@@ -98,4 +155,6 @@ def create_plan(message: str) -> Plan:
             requires_tool=True,
         )
 
-    return Plan(intent=Intent.GENERAL)
+    return Plan(
+        intent=Intent.GENERAL
+    )

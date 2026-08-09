@@ -7,6 +7,10 @@ from app.ai.memory import ConversationMessage, MemoryManager
 from app.ai.planner import Plan, create_plan
 from app.ai.prompts import ATLAS_SYSTEM_PROMPT
 from app.config.settings import get_settings
+from app.tools.financial.market_data import (
+    MarketDataError,
+    get_stock_quote,
+)
 
 
 @dataclass
@@ -23,8 +27,9 @@ class AtlasAgent:
     1. Understand the user's request.
     2. Create an execution plan.
     3. Prepare conversation context.
-    4. Send context to Gemini.
-    5. Return a clean response.
+    4. Execute required tools.
+    5. Send verified information to Gemini.
+    6. Return a clean response.
     """
 
     def __init__(self):
@@ -45,10 +50,7 @@ class AtlasAgent:
 
     def create_plan(self, message: str) -> Plan:
         """
-        Create a deterministic execution plan.
-
-        The planner will be expanded later with
-        financial tools and AI-based routing.
+        Create an execution plan for the user's request.
         """
 
         return create_plan(message)
@@ -75,8 +77,7 @@ class AtlasAgent:
             if role == "assistant":
                 role = "model"
 
-            # System messages are handled separately through
-            # GenerateContentConfig.system_instruction.
+            # System messages are handled separately.
             if role == "system":
                 continue
 
@@ -104,20 +105,79 @@ class AtlasAgent:
 
         return messages
 
+    async def get_market_data_context(
+        self,
+        plan: Plan,
+    ) -> str:
+        """
+        Retrieve verified market data when the plan
+        requires live market information.
+        """
+
+        if plan.intent.value != "market_data":
+            return ""
+
+        if not plan.symbol:
+            return (
+                "No stock symbol could be identified from the user's "
+                "request. Do not guess a symbol. Ask the user to provide "
+                "a company name or stock ticker."
+            )
+
+        try:
+            quote = await get_stock_quote(plan.symbol)
+
+        except MarketDataError as exc:
+            return (
+                "The market data tool failed to retrieve verified data "
+                f"for {plan.symbol}.\n\n"
+                f"Tool error: {exc}\n\n"
+                "Do not invent or estimate a stock price. Explain that "
+                "current market data could not be retrieved."
+            )
+
+        return (
+            "VERIFIED MARKET DATA FROM ALPHA VANTAGE\n"
+            f"Symbol: {quote.symbol}\n"
+            f"Latest available price: {quote.price}\n"
+            f"Change: {quote.change}\n"
+            f"Change percent: {quote.change_percent}\n"
+            f"Volume: {quote.volume}\n"
+            f"Latest trading day: {quote.latest_trading_day}\n\n"
+            "IMPORTANT:\n"
+            "- This data comes from the configured market-data provider.\n"
+            "- Use these values instead of relying on your internal knowledge.\n"
+            "- Do not invent additional market figures.\n"
+            "- Clearly indicate that this is the latest available provider "
+            "data and may not be real-time."
+        )
+
     async def generate_response(
         self,
         messages: list[types.Content],
+        tool_context: str = "",
     ) -> str:
         """
-        Send the conversation to Gemini and return
-        the generated text response.
+        Send the conversation and verified tool information
+        to Gemini and return the generated response.
         """
+
+        system_instruction = ATLAS_SYSTEM_PROMPT
+
+        if tool_context:
+            system_instruction += (
+                "\n\n"
+                "TOOL EXECUTION CONTEXT\n"
+                "The following information was retrieved by Atlas tools. "
+                "Treat it as verified external data for this response.\n\n"
+                f"{tool_context}"
+            )
 
         response = await self.client.aio.models.generate_content(
             model=self.model,
             contents=messages,
             config=types.GenerateContentConfig(
-                system_instruction=ATLAS_SYSTEM_PROMPT,
+                system_instruction=system_instruction,
                 max_output_tokens=1000,
             ),
         )
@@ -145,18 +205,37 @@ class AtlasAgent:
 
         user_message = user_message.strip()
 
+        # ---------------------------------------------------------
         # Step 1: Understand the request.
+        # ---------------------------------------------------------
+
         plan = self.create_plan(user_message)
 
+        # ---------------------------------------------------------
         # Step 2: Prepare conversation context.
+        # ---------------------------------------------------------
+
         messages = self.build_messages(
             user_message=user_message,
             conversation_history=conversation_history,
         )
 
-        # Step 3: Generate the AI response.
+        # ---------------------------------------------------------
+        # Step 3: Execute required tools.
+        # ---------------------------------------------------------
+
+        tool_context = ""
+
+        if plan.requires_tool and plan.intent.value == "market_data":
+            tool_context = await self.get_market_data_context(plan)
+
+        # ---------------------------------------------------------
+        # Step 4: Generate the final response.
+        # ---------------------------------------------------------
+
         response = await self.generate_response(
-            messages=messages
+            messages=messages,
+            tool_context=tool_context,
         )
 
         return AgentResponse(
