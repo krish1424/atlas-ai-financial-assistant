@@ -8,6 +8,8 @@ from telegram.ext import (
 
 from app.config.settings import get_settings
 from app.telegram.handlers import (
+    clear_handler,
+    document_handler,
     message_handler,
     start_handler,
 )
@@ -30,7 +32,24 @@ def create_bot_application() -> Application:
     )
 
     application.add_handler(
-        CommandHandler("start", start_handler)
+        CommandHandler(
+            "start",
+            start_handler,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "clear",
+            clear_handler,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Document.PDF,
+            document_handler,
+        )
     )
 
     application.add_handler(
