@@ -41,14 +41,52 @@ class DocumentAnalysisService:
     def _tokenize(text: str) -> set[str]:
         """
         Convert text into normalized keyword tokens.
+
+        Common stopwords are removed so generic words such as
+        "the", "is", "what", and "about" do not artificially
+        increase chunk relevance.
         """
 
-        return set(
+        stopwords = {
+            "a",
+            "an",
+            "and",
+            "are",
+            "as",
+            "at",
+            "be",
+            "by",
+            "for",
+            "from",
+            "how",
+            "in",
+            "is",
+            "it",
+            "of",
+            "on",
+            "or",
+            "that",
+            "the",
+            "this",
+            "to",
+            "was",
+            "what",
+            "when",
+            "where",
+            "which",
+            "who",
+            "why",
+            "with",
+        }
+
+        tokens = set(
             re.findall(
                 r"\b[a-zA-Z0-9]{2,}\b",
                 text.lower(),
             )
         )
+
+        return tokens - stopwords
 
     @classmethod
     def _score_chunk(
@@ -60,7 +98,7 @@ class DocumentAnalysisService:
         Calculate a simple keyword relevance score.
 
         This is intentionally deterministic and free.
-        We will replace this with semantic retrieval later
+        We can replace it with semantic retrieval later
         if the project requires it.
         """
 
@@ -82,6 +120,8 @@ class DocumentAnalysisService:
     ) -> list[DocumentChunk]:
         """
         Select the most relevant document chunks.
+
+        Matching chunks are ranked by keyword relevance.
 
         If no chunk matches the question keywords,
         return the first few chunks so Gemini can still
