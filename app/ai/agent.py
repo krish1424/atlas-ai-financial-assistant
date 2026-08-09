@@ -7,13 +7,20 @@ from app.ai.memory import ConversationMessage, MemoryManager
 from app.ai.planner import Plan, Intent, create_plan
 from app.ai.prompts import ATLAS_SYSTEM_PROMPT
 from app.config.settings import get_settings
+
 from app.tools.financial.company_data import (
     CompanyDataError,
     get_company_overview,
 )
+
 from app.tools.financial.market_data import (
     MarketDataError,
     get_stock_quote,
+)
+
+from app.tools.financial.news_data import (
+    NewsDataError,
+    get_financial_news,
 )
 
 
@@ -31,7 +38,7 @@ class AtlasAgent:
     1. Understand the user's request.
     2. Create an execution plan.
     3. Prepare conversation context.
-    4. Execute required tools.
+    4. Execute required financial tools.
     5. Send verified information to Gemini.
     6. Return a clean response.
     """
@@ -73,9 +80,11 @@ class AtlasAgent:
         for message in context:
             role = message["role"]
 
+            # Gemini uses "model" instead of "assistant".
             if role == "assistant":
                 role = "model"
 
+            # System messages are handled separately.
             if role == "system":
                 continue
 
@@ -124,8 +133,8 @@ class AtlasAgent:
 
         except MarketDataError as exc:
             return (
-                f"Market data could not be retrieved for "
-                f"{plan.symbol}.\n\n"
+                f"Market data could not be retrieved "
+                f"for {plan.symbol}.\n\n"
                 f"Tool error: {exc}\n\n"
                 "Do not invent or estimate a stock price."
             )
@@ -193,12 +202,101 @@ class AtlasAgent:
             "- Explain figures clearly when presenting them."
         )
 
+    async def get_news_data_context(
+        self,
+        plan: Plan,
+    ) -> str:
+        """
+        Retrieve verified financial news for the requested company.
+        """
+
+        if plan.intent != Intent.NEWS:
+            return ""
+
+        if not plan.symbol:
+            return (
+                "No company symbol could be identified for the "
+                "news request. Do not guess a company. Ask the "
+                "user for the company name or stock ticker."
+            )
+
+        try:
+            articles = await get_financial_news(
+                symbol=plan.symbol,
+                limit=5,
+            )
+
+        except NewsDataError as exc:
+            return (
+                f"Financial news could not be retrieved "
+                f"for {plan.symbol}.\n\n"
+                f"Tool error: {exc}\n\n"
+                "Do not invent or summarize news that was not "
+                "retrieved by the news tool."
+            )
+
+        if not articles:
+            return (
+                f"No financial news was found for "
+                f"{plan.symbol}."
+            )
+
+        lines = [
+            "VERIFIED FINANCIAL NEWS FROM ALPHA VANTAGE",
+            f"Requested symbol: {plan.symbol}",
+            "",
+            "IMPORTANT:",
+            "- These articles were retrieved by Atlas's financial news tool.",
+            "- Use only the information provided below.",
+            "- Do not invent additional news, facts, prices, or events.",
+            "- Clearly distinguish reported facts from analysis.",
+            "",
+        ]
+
+        for index, article in enumerate(
+            articles,
+            start=1,
+        ):
+            published = (
+                article.published_at.isoformat()
+                if article.published_at
+                else "Unknown"
+            )
+
+            sentiment = (
+                article.sentiment
+                if article.sentiment
+                else "Unknown"
+            )
+
+            sentiment_score = (
+                str(article.sentiment_score)
+                if article.sentiment_score is not None
+                else "Unknown"
+            )
+
+            lines.extend(
+                [
+                    f"ARTICLE {index}",
+                    f"Title: {article.title}",
+                    f"Source: {article.source}",
+                    f"Published: {published}",
+                    f"Sentiment: {sentiment}",
+                    f"Sentiment score: {sentiment_score}",
+                    f"URL: {article.url}",
+                    f"Summary: {article.summary}",
+                    "",
+                ]
+            )
+
+        return "\n".join(lines)
+
     async def get_tool_context(
         self,
         plan: Plan,
     ) -> str:
         """
-        Execute the appropriate tool based on the plan.
+        Execute the appropriate financial tool based on the plan.
         """
 
         if not plan.requires_tool:
@@ -209,6 +307,9 @@ class AtlasAgent:
 
         if plan.intent == Intent.COMPANY_RESEARCH:
             return await self.get_company_data_context(plan)
+
+        if plan.intent == Intent.NEWS:
+            return await self.get_news_data_context(plan)
 
         return ""
 
@@ -236,7 +337,7 @@ class AtlasAgent:
             contents=messages,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                max_output_tokens=1000,
+                max_output_tokens=1200,
             ),
         )
 
@@ -252,7 +353,7 @@ class AtlasAgent:
         user_message: str,
         conversation_history: list[ConversationMessage] | None = None,
     ) -> AgentResponse:
-        """Process a user request through Atlas."""
+        """Process a user request through the Atlas AI pipeline."""
 
         if not user_message or not user_message.strip():
             raise ValueError(
@@ -270,10 +371,10 @@ class AtlasAgent:
             conversation_history=conversation_history,
         )
 
-        # 3. Execute required tools.
+        # 3. Execute the required financial tool.
         tool_context = await self.get_tool_context(plan)
 
-        # 4. Generate final response.
+        # 4. Generate the final Gemini response.
         response = await self.generate_response(
             messages=messages,
             tool_context=tool_context,
